@@ -163,6 +163,8 @@ def main():
     # Initialize pygame's audio mixer before anything else audio-related
     pygame.mixer.init()
     chord_sounds = load_chord_sounds()
+    print(f"[DEBUG] Successfully loaded sounds: {list(chord_sounds.keys())}")
+    print(f"[DEBUG] Mixer initialized: {pygame.mixer.get_init()}")
 
     base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
     options = vision.HandLandmarkerOptions(
@@ -225,7 +227,11 @@ def main():
         # --- Only trigger playback when the CONFIRMED chord changes ---
         if confirmed_chord != last_played_chord:
             if confirmed_chord is not None and confirmed_chord in chord_sounds:
-                chord_sounds[confirmed_chord].play()
+                print(f"[DEBUG] Playing chord: {confirmed_chord}")
+                play_result = chord_sounds[confirmed_chord].play()
+                print(f"[DEBUG] play() returned channel: {play_result}")
+            elif confirmed_chord is not None:
+                print(f"[DEBUG] Chord '{confirmed_chord}' recognized but NOT in loaded sounds: {list(chord_sounds.keys())}")
             last_played_chord = confirmed_chord
 
         draw_chord_display(frame, confirmed_chord, hand_detected)
