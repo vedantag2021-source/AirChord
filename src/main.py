@@ -59,16 +59,41 @@ def load_chord_sounds():
     return sounds
 
 
-def get_finger_states(hand_landmarks, handedness_label):
+def euclidean_distance(point_a, point_b):
+    """Straight-line distance between two landmarks (in normalized 0-1 coords)."""
+    return ((point_a.x - point_b.x) ** 2 + (point_a.y - point_b.y) ** 2) ** 0.5
+
+
+def get_finger_states(hand_landmarks):
+    """
+    Returns a list of 5 values (1 = extended, 0 = curled): [Thumb, Index, Middle, Ring, Pinky]
+
+    This version is hand-agnostic (works for both left and right hands)
+    and does NOT rely on MediaPipe's handedness classification, which
+    can be unreliable. Instead, the thumb is checked geometrically:
+    if it's spread away from the palm, it's "extended," regardless of
+    which hand or orientation is being used.
+    """
     states = []
-    thumb_tip_x = hand_landmarks[FINGER_TIPS[0]].x
-    thumb_pip_x = hand_landmarks[FINGER_PIPS[0]].x
 
-    if handedness_label == "Right":
-        states.append(1 if thumb_tip_x > thumb_pip_x else 0)
-    else:
-        states.append(1 if thumb_tip_x < thumb_pip_x else 0)
+    # --- Thumb: distance-based, orientation independent ---
+    # Reference "hand size" = distance from wrist to middle-finger base.
+    # This lets us judge "far" vs "close" relative to THIS hand's size,
+    # so it works whether the hand is close to or far from the camera.
+    wrist = hand_landmarks[0]
+    middle_mcp = hand_landmarks[9]
+    hand_size = euclidean_distance(wrist, middle_mcp)
 
+    thumb_tip = hand_landmarks[4]
+    pinky_mcp = hand_landmarks[17]
+    thumb_spread = euclidean_distance(thumb_tip, pinky_mcp)
+
+    # If the thumb tip is far from the pinky's base (relative to hand size),
+    # the thumb is spread out / extended. This threshold (0.6) was chosen
+    # empirically -- tweak it slightly if thumb detection feels off for you.
+    states.append(1 if thumb_spread > 0.6 * hand_size else 0)
+
+    # --- Other four fingers: same as before (orientation doesn't matter here) ---
     for tip_idx, pip_idx in zip(FINGER_TIPS[1:], FINGER_PIPS[1:]):
         tip_y = hand_landmarks[tip_idx].y
         pip_y = hand_landmarks[pip_idx].y
@@ -140,8 +165,7 @@ def main():
 
         if result.hand_landmarks:
             draw_landmarks(frame, result.hand_landmarks)
-            handedness_label = result.handedness[0][0].category_name
-            states = get_finger_states(result.hand_landmarks[0], handedness_label)
+            states = get_finger_states(result.hand_landmarks[0])
             chord_name = map_gesture_to_chord(states)
 
         # --- Only trigger playback when the chord CHANGES ---
