@@ -1,9 +1,15 @@
 """
-Phase 5: Audio Playback
+Phase 6: Stability & Polish
 ------------------------------
-Goal: Play the correct chord sample when a gesture is recognized,
-only triggering playback when the detected chord actually CHANGES
-(not every single frame).
+Goal: Make gesture detection feel stable and instrument-like instead of
+jittery, and improve on-screen readability.
+
+Key additions over Phase 5:
+- A gesture must be held for several consecutive frames before it's
+  "confirmed" and triggers audio -- this filters out one-frame flickers
+  caused by natural hand shake or momentary misdetection.
+- Cleaner on-screen display with a background box behind the chord text.
+- Explicit "No hand detected" message when the hand leaves the frame.
 
 Requires:
 - assets/models/hand_landmarker.task
@@ -41,6 +47,11 @@ GESTURE_TO_CHORD = {
     (0, 1, 1, 1, 0): "Em",
     (1, 1, 1, 1, 1): "A",
 }
+
+# How many consecutive frames a gesture must be held before we "confirm"
+# it and trigger audio. Higher = more stable but slightly less responsive.
+# Lower = snappier but more prone to false triggers from hand jitter.
+STABILITY_THRESHOLD = 6
 
 
 def load_chord_sounds():
@@ -116,11 +127,36 @@ def draw_landmarks(frame, hand_landmarks_list):
             cv2.circle(frame, point, 5, (0, 0, 255), -1)
 
 
-def draw_chord_display(frame, chord_name):
-    display_text = chord_name if chord_name else "No Chord"
-    color = (0, 255, 0) if chord_name else (0, 0, 255)
-    cv2.putText(frame, display_text, (frame.shape[1] // 2 - 80, 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.8, color, 4)
+def draw_chord_display(frame, chord_name, hand_detected):
+    """
+    Draws a readable status box at the top of the frame.
+    Shows the current chord, or 'No Chord' if a hand is visible but
+    the gesture isn't recognized, or 'No Hand Detected' if there's
+    no hand in view at all.
+    """
+    if not hand_detected:
+        display_text = "No Hand Detected"
+        color = (0, 165, 255)  # orange
+    elif chord_name:
+        display_text = chord_name
+        color = (0, 255, 0)  # green
+    else:
+        display_text = "No Chord"
+        color = (0, 0, 255)  # red
+
+    # Draw a solid dark background box so text stays readable
+    # regardless of what's behind it in the webcam feed.
+    box_width = frame.shape[1]
+    cv2.rectangle(frame, (0, 0), (box_width, 80), (30, 30, 30), -1)
+
+    # Center the text horizontally using its actual rendered width
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1.6
+    thickness = 3
+    text_size = cv2.getTextSize(display_text, font, font_scale, thickness)[0]
+    text_x = (box_width - text_size[0]) // 2
+
+    cv2.putText(frame, display_text, (text_x, 55), font, font_scale, color, thickness)
 
 
 def main():
@@ -144,9 +180,15 @@ def main():
     print("Audio playback running. Press 'q' to quit.")
     start_time = time.time()
 
-    # Tracks the last chord that was played, so we don't replay the
-    # same chord over and over every frame while the gesture is held.
+    # Tracks the last CONFIRMED chord that was played (audio only
+    # triggers when this changes).
     last_played_chord = None
+
+    # --- Stability tracking ---
+    # candidate_chord: what the current raw detection says right now
+    # candidate_streak: how many consecutive frames it's been the same
+    candidate_chord = None
+    candidate_streak = 0
 
     while True:
         ret, frame = cap.read()
@@ -161,20 +203,32 @@ def main():
 
         result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
-        chord_name = None
+        hand_detected = bool(result.hand_landmarks)
+        raw_chord = None
 
-        if result.hand_landmarks:
+        if hand_detected:
             draw_landmarks(frame, result.hand_landmarks)
             states = get_finger_states(result.hand_landmarks[0])
-            chord_name = map_gesture_to_chord(states)
+            raw_chord = map_gesture_to_chord(states)
 
-        # --- Only trigger playback when the chord CHANGES ---
-        if chord_name != last_played_chord:
-            if chord_name is not None and chord_name in chord_sounds:
-                chord_sounds[chord_name].play()
-            last_played_chord = chord_name
+        # --- Update the stability streak ---
+        if raw_chord == candidate_chord:
+            candidate_streak += 1
+        else:
+            candidate_chord = raw_chord
+            candidate_streak = 1
 
-        draw_chord_display(frame, chord_name)
+        # Only treat the gesture as "confirmed" once it's been stable
+        # for STABILITY_THRESHOLD consecutive frames.
+        confirmed_chord = candidate_chord if candidate_streak >= STABILITY_THRESHOLD else last_played_chord
+
+        # --- Only trigger playback when the CONFIRMED chord changes ---
+        if confirmed_chord != last_played_chord:
+            if confirmed_chord is not None and confirmed_chord in chord_sounds:
+                chord_sounds[confirmed_chord].play()
+            last_played_chord = confirmed_chord
+
+        draw_chord_display(frame, confirmed_chord, hand_detected)
         cv2.imshow("AirChord", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
