@@ -1,17 +1,20 @@
 """
 chord_diagrams.py
 ------------------------------
-Draws simple, standard open-chord fretboard diagrams (like you'd see
-in any beginner guitar chart) onto an OpenCV frame. Purely visual --
-this has no effect on gesture logic, it's just a nice touch showing
-the actual finger positions for the currently detected chord.
+Draws standard open-chord fretboard diagrams onto an OpenCV frame.
+
+Design note: every element (title, open/muted string markers, string
+lines, fret lines, and finger dots) is positioned relative to ONE
+shared anchor point (grid_x0, grid_y0) -- the top-left corner of the
+actual string/fret grid. This is what keeps everything precisely
+aligned; the earlier version computed marker positions from a
+different, unrelated offset, which is why they drifted.
 """
 
 import cv2
 
 # Each chord is defined per-string (low E, A, D, G, B, high e).
-# None = muted string (shown as "x"), 0 = open string (shown as "o"),
-# 1-4 = fret number to press.
+# None = muted string ("x"), 0 = open string ("o"), 1-4 = fret to press.
 CHORD_SHAPES = {
     "G":  [3, 2, 0, 0, 0, 3],
     "C":  [None, 3, 2, 0, 1, 0],
@@ -20,51 +23,77 @@ CHORD_SHAPES = {
     "A":  [None, 0, 2, 2, 2, 0],
 }
 
+NUM_STRINGS = 6
 NUM_FRETS_SHOWN = 4
 
+# Layout constants (all in pixels) -- change these to resize the whole
+# diagram consistently, everything else derives from them.
+PADDING = 14
+TITLE_HEIGHT = 26
+MARKER_ROW_HEIGHT = 22
+MARKER_RADIUS = 6
 
-def draw_chord_diagram(frame, chord_name, top_left=(20, 100), width=140, height=170):
+
+def draw_chord_diagram(frame, chord_name, top_left=(20, 80), grid_width=130, grid_height=140):
     """
-    Draws a small fretboard diagram for chord_name at the given position.
-    Does nothing if chord_name isn't in CHORD_SHAPES (e.g. None / "No Chord").
+    Draws a fretboard diagram for chord_name, anchored with its
+    top-left panel corner at `top_left`. grid_width/grid_height define
+    the size of just the string/fret grid itself (the panel around it
+    is slightly larger to fit the title and marker row).
     """
     if chord_name not in CHORD_SHAPES:
         return
 
     shape = CHORD_SHAPES[chord_name]
-    x0, y0 = top_left
+    panel_x0, panel_y0 = top_left
 
-    # Background panel so the diagram is readable over any video content
-    cv2.rectangle(frame, (x0 - 10, y0 - 30), (x0 + width + 10, y0 + height + 10),
-                  (30, 30, 30), -1)
-    cv2.putText(frame, chord_name, (x0 + width // 2 - 15, y0 - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    # --- The single shared anchor everything else is built from ---
+    grid_x0 = panel_x0 + PADDING
+    grid_y0 = panel_y0 + PADDING + TITLE_HEIGHT + MARKER_ROW_HEIGHT
 
-    num_strings = 6
-    string_spacing = width / (num_strings - 1)
-    fret_spacing = height / NUM_FRETS_SHOWN
+    panel_x1 = panel_x0 + grid_width + 2 * PADDING
+    panel_y1 = grid_y0 + grid_height + PADDING
 
-    # Draw the 6 vertical string lines
-    for i in range(num_strings):
-        x = int(x0 + i * string_spacing)
-        cv2.line(frame, (x, y0), (x, y0 + height), (200, 200, 200), 2)
+    # --- Background panel (covers title + markers + grid, all in one box) ---
+    cv2.rectangle(frame, (panel_x0, panel_y0), (panel_x1, panel_y1), (30, 30, 30), -1)
 
-    # Draw the horizontal fret lines
+    # --- Title, centered within the panel width ---
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size = cv2.getTextSize(chord_name, font, 0.75, 2)[0]
+    title_x = panel_x0 + (panel_x1 - panel_x0 - text_size[0]) // 2
+    title_y = panel_y0 + PADDING + int(TITLE_HEIGHT * 0.7)
+    cv2.putText(frame, chord_name, (title_x, title_y), font, 0.75, (0, 255, 255), 2)
+
+    # --- Grid geometry, derived from the shared anchor ---
+    string_spacing = grid_width / (NUM_STRINGS - 1)
+    fret_spacing = grid_height / NUM_FRETS_SHOWN
+
+    string_x_positions = [int(grid_x0 + i * string_spacing) for i in range(NUM_STRINGS)]
+
+    # Vertical string lines
+    for x in string_x_positions:
+        cv2.line(frame, (x, grid_y0), (x, grid_y0 + grid_height), (200, 200, 200), 2)
+
+    # Horizontal fret lines (top one thicker, representing the nut)
     for i in range(NUM_FRETS_SHOWN + 1):
-        y = int(y0 + i * fret_spacing)
-        thickness = 4 if i == 0 else 1  # thicker top line = the nut
-        cv2.line(frame, (x0, y), (x0 + width, y), (200, 200, 200), thickness)
+        y = int(grid_y0 + i * fret_spacing)
+        thickness = 4 if i == 0 else 1
+        cv2.line(frame, (grid_x0, y), (grid_x0 + grid_width, y), (200, 200, 200), thickness)
 
-    # Draw open/muted string markers above the diagram, and finger dots on it
-    for i, fret in enumerate(shape):
-        x = int(x0 + i * string_spacing)
+    # --- Open/muted markers, vertically centered in the marker row,
+    #     directly above the grid's top edge (same x as each string) ---
+    marker_y = grid_y0 - MARKER_ROW_HEIGHT // 2
 
+    for x, fret in zip(string_x_positions, shape):
         if fret is None:
-            cv2.putText(frame, "x", (x - 6, y0 - 40), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 0, 255), 2)
+            r = MARKER_RADIUS
+            cv2.line(frame, (x - r, marker_y - r), (x + r, marker_y + r), (0, 0, 255), 2)
+            cv2.line(frame, (x - r, marker_y + r), (x + r, marker_y - r), (0, 0, 255), 2)
         elif fret == 0:
-            cv2.circle(frame, (x, y0 - 45), 7, (0, 255, 0), 2)
-        else:
-            # Position the dot in the middle of its fret's vertical space
-            dot_y = int(y0 + (fret - 0.5) * fret_spacing)
-            cv2.circle(frame, (x, dot_y), 9, (0, 255, 255), -1)
+            cv2.circle(frame, (x, marker_y), MARKER_RADIUS + 1, (0, 255, 0), 2)
+
+    # --- Finger dots, centered within their fret's vertical band ---
+    for x, fret in zip(string_x_positions, shape):
+        if fret and fret > 0:
+            dot_y = int(grid_y0 + (fret - 0.5) * fret_spacing)
+            cv2.circle(frame, (x, dot_y), MARKER_RADIUS + 3, (0, 255, 255), -1)
