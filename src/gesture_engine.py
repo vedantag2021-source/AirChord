@@ -118,6 +118,19 @@ class GestureEngine:
                 print(f"Warning: Could not load {file_path} ({e})")
         return sounds
 
+    def reload_sounds(self):
+        """
+        Re-reads all chord .wav files from disk and replaces the
+        currently loaded sounds. Call this after regenerating audio
+        (e.g. via the AI generator) so new sounds take effect
+        immediately, without restarting the whole application.
+        """
+        self.chord_sounds = self._load_chord_sounds()
+
+    def reload_sounds(self):
+        """Re-reads .wav files from disk -- call this after regenerating audio."""
+        self.chord_sounds = self._load_chord_sounds()
+
     def process_frame(self, frame):
         """
         Takes one BGR webcam frame (already flipped, if desired, by the

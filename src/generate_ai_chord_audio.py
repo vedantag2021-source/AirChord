@@ -1,99 +1,105 @@
 """
-generate_ai_chord_audio.py
+ai_audio_generator.py
 ------------------------------
-Generates realistic guitar chord audio using ElevenLabs' text-to-audio
-Sound Generation API (genuinely AI-generated, not synthesized sine waves).
-
-Setup required:
-1. Get a free API key from https://elevenlabs.io (Profile -> API Keys)
-2. Set it as an environment variable named ELEVENLABS_API_KEY
-3. pip install requests pydub
-4. Install ffmpeg (needed by pydub to convert mp3 -> wav)
-
-Run once:
-    python generate_ai_chord_audio.py
-Output: assets/audio/G.wav, C.wav, D.wav, Em.wav, A.wav (overwrites existing)
+Reusable AI chord-audio generation logic, parameterized by style
+description and duration, so it can be triggered from a UI (with
+user-chosen settings) rather than only run as a fixed one-off script.
 """
 
 import os
+import io
 import requests
 from pydub import AudioSegment
-import io
 
 API_URL = "https://api.elevenlabs.io/v1/sound-generation"
 OUTPUT_FOLDER = "assets/audio"
 
-# Text prompts describing each chord's desired sound. Since this is a
-# generative model, wording matters -- feel free to tweak these
-# descriptions to steer the tone/style if results don't sound right.
-CHORD_PROMPTS = {
-    "G":  "A single clean strum of a G major chord on an acoustic guitar, warm and bright, natural string decay, no background noise,make the duration of sound upto 5 seconds",
-    "C":  "A single clean strum of a C major chord on an acoustic guitar, bright and clear, natural string decay, no background noise,make the duration of sound upto 5 seconds",
-    "D":  "A single clean strum of a D major chord on an acoustic guitar, warm and resonant, natural string decay, no background noise,make the duration of sound upto 5 seconds",
-    "Em": "A single clean strum of an E minor chord on an acoustic guitar, mellow and slightly somber, natural string decay, no background noise,make the duration of sound upto 5 seconds",
-    "A":  "A single clean strum of an A major chord on an acoustic guitar, full and rich, natural string decay, no background noise,make the duration of sound upto 5 seconds",
+# The core quality/character of each chord, combined with the user's
+# chosen style description to build the final prompt sent to the API.
+CHORD_BASE_DESCRIPTIONS = {
+    "G":  "G major chord",
+    "C":  "C major chord",
+    "D":  "D major chord",
+    "Em": "E minor chord",
+    "A":  "A major chord",
 }
 
-DURATION_SECONDS = 2.0
+
+def build_prompt(chord_name, style_description):
+    """
+    Combines the chord's identity with a user-provided style description
+    into a single text prompt for the audio generation model.
+
+    Example: chord_name="G", style_description="warm acoustic, fingerpicked"
+    -> "A single clean strum of a G major chord, warm acoustic,
+        fingerpicked, natural string decay, no background noise"
+    """
+    base = CHORD_BASE_DESCRIPTIONS[chord_name]
+    return (
+        f"A single clean strum of a {base}, {style_description}, "
+        f"natural string decay, no background noise"
+    )
 
 
-def generate_chord_audio(prompt, api_key):
-    """
-    Calls the ElevenLabs Sound Generation API with a text prompt and
-    returns the raw MP3 audio bytes.
-    """
+def generate_chord_audio_bytes(prompt, api_key, duration_seconds):
+    """Calls the ElevenLabs API and returns raw MP3 bytes."""
     headers = {
         "xi-api-key": api_key,
         "Content-Type": "application/json",
     }
     payload = {
         "text": prompt,
-        "duration_seconds": DURATION_SECONDS,
-        # prompt_influence controls how strictly the model follows the
-        # text description vs. adding its own creative variation.
-        # Higher = more literal/predictable, lower = more variety.
+        "duration_seconds": duration_seconds,
         "prompt_influence": 0.4,
     }
 
-    response = requests.post(API_URL, headers=headers, json=payload)
+    response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
 
     if response.status_code != 200:
-        raise RuntimeError(
-            f"API request failed ({response.status_code}): {response.text}"
-        )
+        raise RuntimeError(f"API request failed ({response.status_code}): {response.text}")
 
-    return response.content  # raw MP3 bytes
+    return response.content
 
 
 def mp3_bytes_to_wav_file(mp3_bytes, output_path):
-    """Converts in-memory MP3 bytes to a .wav file on disk using pydub."""
     audio = AudioSegment.from_file(io.BytesIO(mp3_bytes), format="mp3")
     audio.export(output_path, format="wav")
 
 
-def main():
-    api_key = os.environ.get("ELEVENLABS_API_KEY")
-    if not api_key:
-        print("ERROR: ELEVENLABS_API_KEY environment variable not set.")
-        print("Set it and restart your terminal, then try again.")
-        return
+def generate_all_chords(style_description, duration_seconds, api_key, progress_callback=None):
+    """
+    Generates all 5 chord sounds using the given style + duration.
 
+    progress_callback, if provided, is called as:
+        progress_callback(chord_name, status)
+    where status is one of: "generating", "done", "error"
+    (kept as plain, fixed strings so a UI can match on them exactly,
+    rather than parsing free-form error text).
+
+    Returns a dict like {"G": True, "C": True, "D": False, ...} where
+    True = generated successfully, False = failed for that chord.
+    """
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    results = {}
 
-    for chord_name, prompt in CHORD_PROMPTS.items():
-        print(f"Generating '{chord_name}'...")
+    for chord_name in CHORD_BASE_DESCRIPTIONS:
+        if progress_callback:
+            progress_callback(chord_name, "generating")
+
         try:
-            mp3_bytes = generate_chord_audio(prompt, api_key)
+            prompt = build_prompt(chord_name, style_description)
+            mp3_bytes = generate_chord_audio_bytes(prompt, api_key, duration_seconds)
             output_path = os.path.join(OUTPUT_FOLDER, f"{chord_name}.wav")
             mp3_bytes_to_wav_file(mp3_bytes, output_path)
-            print(f"  Saved: {output_path}")
+
+            results[chord_name] = True
+            if progress_callback:
+                progress_callback(chord_name, "done")
+
         except Exception as e:
-            print(f"  Failed to generate '{chord_name}': {e}")
+            print(f"Error generating '{chord_name}': {e}")
+            results[chord_name] = False
+            if progress_callback:
+                progress_callback(chord_name, "error")
 
-    print("\nDone. Replace/keep these files in assets/audio/ -- no code")
-    print("changes needed elsewhere, since gesture_engine.py just plays")
-    print("whatever .wav files are already there.")
-
-
-if __name__ == "__main__":
-    main()
+    return results
