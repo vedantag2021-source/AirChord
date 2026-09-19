@@ -22,9 +22,8 @@ from tkinter import ttk
 import cv2
 from PIL import Image, ImageTk
 import datetime
+import threading 
 import os
-import threading
-
 from gesture_engine import GestureEngine
 from chord_diagrams import draw_chord_diagram
 from generate_ai_chord_audio import generate_all_chords
